@@ -1,0 +1,74 @@
+---
+- hosts: target
+  sudo: yes
+  vars:
+    version: 4.4.3
+    detail_version: 4.4.3.2
+    libre_office_tar_name: LibreOffice_{{ version }}_Linux_x86-64_rpm
+    gs_version: 9.15
+    src_path: /usr/local/src/pptgallery
+  tasks:
+    - stat: path={{ libre_office_tar_name }}
+      register: libre
+    - name: LibreOffice 4.4.0 Download
+      get_url: url="http://download.documentfoundation.org/libreoffice/stable/{{ version }}/rpm/x86_64/LibreOffice_{{ version }}_Linux_x86-64_rpm.tar.gz" dest=.
+      when: libre.stat.exists == False
+    - file: path={{ libre_office_tar_name }} state=directory
+    - command: tar xvf ./{{ libre_office_tar_name }}.tar.gz --directory {{ libre_office_tar_name }}
+    - shell: find {{ libre_office_tar_name }} -name "*.rpm" | xargs yum -y localinstall
+    - name: ImageMagick install
+      yum: name={{ item }} state=latest
+      with_items:
+      - ImageMagick-devel
+      - libjpeg-devel
+      - libpng-devel
+    - stat: path=ImageMagick.tar.gz
+      register: magick_tar
+    - get_url: url="http://www.imagemagick.org/download/ImageMagick.tar.gz" dest=.
+      when: magick_tar.stat.exists == False
+    - command: tar xvzf ImageMagick.tar.gz
+    - command: ./configure chdir=ImageMagick-6.9.1-5
+    - command: make chdir=ImageMagick-6.9.1-5
+    - command: make install chdir=ImageMagick-6.9.1-5
+    - command: ldconfig /usr/local/lib
+    - name: Install Recent Ghostscript
+      yum: name=ghostscript* state=absent
+    - stat: path=ghostscript-{{ gs_version }}.tar.gz
+      register: gs_tar
+    - get_url: url=http://downloads.ghostscript.com/public/ghostscript-{{ gs_version }}.tar.gz dest=.
+      when: gs_tar.stat.exists == False
+    - command: tar xvzf ghostscript-{{ gs_version }}.tar.gz
+    - command: ./configure --prefix=/usr/local chdir=ghostscript-{{ gs_version }}
+    - command: make chdir=ghostscript-{{ gs_version }}
+    - command: make install chdir=ghostscript-{{ gs_version }}
+    - file: src=/usr/local/bin/gs dest=/usr/bin/gs mode=0775 state=link
+    - name: Ruby install
+      yum: name={{ item }} state=latest
+      with_items:
+      - ruby
+      - ruby-devel
+    - group: name=dev state=present
+    - user: name=dev password=dev group=dev state=present
+    - file: path={{ src_path }} owner=dev group=dev recurse=yes state=directory
+    - name: git clone pptgallery
+      git: repo=https://github.com/kaakaa/PPTGallery.git dest={{ src_path }} force=yes update=yes
+      sudo_user: dev
+    - name: Bundler install
+      command: bash -lc "gem install bundler"
+    - shell: /usr/local/bin/bundle install --path vendor/bundle chdir={{ src_path }}
+      environment:
+        PKG_CONFIG_PATH: /usr/local/lib/pkgconfig 
+        PATH: /usr/local/bin:{{ ansible_env.PATH }}
+      sudo_user: dev
+    - shell: env PATH=/opt/libreoffice4.4/program:/usr/local/bin:$PATH /usr/local/bin/bundle exec foreman start chdir={{ src_path }}
+      environment:
+        LD_LIBRARY_PATH: /usr/local/lib 
+        PATH: /usr/local/bin:{{ ansible_env.PATH }}
+      sudo_user: dev
+    - firewalld: zone=public service=http state=enabled permanent=true
+    - firewalld: zone=public port=5000/tcp state=enabled permanent=true
+      notify: reload firewalld
+
+  handlers:
+    - name: reload firewalld
+      service: name=firewalld state=restarted
